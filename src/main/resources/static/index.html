@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SmartAssist</title>
+<style>
+:root { --bg:#f6f7f9; --panel:#fff; --ink:#1d2433; --muted:#6a7488; --line:#dde1e8; --accent:#3a54d4; --me:#e8ecff; }
+@media (prefers-color-scheme: dark) { :root { --bg:#12151c; --panel:#1b1f29; --ink:#e7eaf1; --muted:#9aa3b6; --line:#2c3341; --accent:#8da2ff; --me:#27304f; } }
+* { box-sizing:border-box; }
+body { margin:0; display:flex; height:100vh; background:var(--bg); color:var(--ink); font-family:"Segoe UI",system-ui,sans-serif; }
+aside { width:260px; background:var(--panel); border-right:1px solid var(--line); padding:12px; overflow-y:auto; }
+main { flex:1; display:flex; flex-direction:column; min-width:0; }
+header { display:flex; justify-content:space-between; align-items:center; padding:12px 16px; background:var(--panel); border-bottom:1px solid var(--line); }
+#log { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:10px; }
+.m { max-width:78%; padding:10px 14px; border-radius:10px; white-space:pre-wrap; line-height:1.45; border:1px solid var(--line); background:var(--panel); }
+.m.user { align-self:flex-end; background:var(--me); }
+#err { color:#b3261e; margin:0; padding:0 16px; min-height:1.2em; }
+form { display:flex; gap:8px; padding:12px 16px; background:var(--panel); border-top:1px solid var(--line); }
+input, select { padding:10px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--ink); font:inherit; }
+input { flex:1; }
+button { font:inherit; padding:9px 14px; border:1px solid var(--accent); background:var(--accent); color:#fff; border-radius:6px; cursor:pointer; }
+button:disabled { opacity:.6; cursor:wait; }
+#new { width:100%; margin-bottom:10px; }
+ul { list-style:none; margin:0; padding:0; }
+li { display:flex; gap:4px; margin-bottom:4px; }
+li button { background:none; color:var(--ink); border-color:transparent; text-align:left; }
+li button:first-child { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+li button.on { background:var(--me); }
+button:focus-visible, input:focus-visible, select:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+@media (max-width:640px) { aside { display:none; } }
+</style>
+</head>
+<body>
+<aside><button id="new">New chat</button><ul id="convs"></ul></aside>
+<main>
+  <header><strong>SmartAssist</strong><label>Model <select id="provider"></select></label></header>
+  <div id="log"></div>
+  <p id="err" role="alert"></p>
+  <form id="f"><input id="msg" placeholder="Ask something" autocomplete="off"><button id="send">Send</button></form>
+</main>
+<script>
+let convId = null;
+const $ = (id) => document.getElementById(id);
+
+async function api(path, method = "GET", body) {
+  const res = await fetch("/api" + path, { method, headers: body ? { "Content-Type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}));
+    throw new Error(((e.message || "Request failed.") + " " + (e.errors ? Object.values(e.errors).join(" ") : "")).trim());
+  }
+  return res.status === 204 ? null : res.json();
+}
+function add(role, text) {
+  const d = document.createElement("div");
+  d.className = "m " + role;
+  d.textContent = text; // textContent, never innerHTML, so model output can't inject markup
+  $("log").appendChild(d);
+  $("log").scrollTop = $("log").scrollHeight;
+  return d;
+}
+function reset() { convId = null; $("log").innerHTML = ""; }
+async function loadConvs() {
+  const list = await api("/conversations");
+  const ul = $("convs");
+  ul.innerHTML = "";
+  list.forEach((c) => {
+    const li = document.createElement("li");
+    const open = document.createElement("button");
+    open.textContent = c.title;
+    if (c.id === convId) open.className = "on";
+    open.onclick = () => openConv(c.id);
+    const del = document.createElement("button");
+    del.textContent = "x";
+    del.title = "Delete conversation";
+    del.onclick = async () => { await api("/conversations/" + c.id, "DELETE"); if (convId === c.id) reset(); loadConvs(); };
+    li.append(open, del);
+    ul.appendChild(li);
+  });
+}
+async function openConv(id) {
+  convId = id;
+  $("log").innerHTML = "";
+  (await api("/conversations/" + id + "/messages")).forEach((m) => add(m.role.toLowerCase(), m.content));
+  loadConvs();
+}
+$("new").onclick = () => { reset(); loadConvs(); };
+$("f").onsubmit = async (e) => {
+  e.preventDefault();
+  const text = $("msg").value.trim();
+  if (!text) return;
+  $("err").textContent = "";
+  $("msg").value = "";
+  add("user", text);
+  const wait = add("assistant", "Thinking...");
+  $("send").disabled = true;
+  try {
+    const r = await api("/chat", "POST", { conversationId: convId, message: text, provider: $("provider").value });
+    convId = r.conversationId;
+    wait.textContent = r.reply;
+    loadConvs();
+  } catch (err) {
+    wait.remove();
+    $("err").textContent = err.message;
+  } finally {
+    $("send").disabled = false;
+  }
+};
+(async () => {
+  try {
+    (await api("/providers")).forEach((p) => { const o = document.createElement("option"); o.value = o.textContent = p; $("provider").appendChild(o); });
+    await loadConvs();
+  } catch (err) { $("err").textContent = err.message; }
+})();
+</script>
+</body>
+</html>
